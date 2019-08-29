@@ -1,4 +1,4 @@
-package bwh.mterms.notebook;
+package com.clirq.notebook;
 
 import java.util.Map;
 
