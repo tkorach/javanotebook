@@ -27,7 +27,8 @@ public class Kernel implements Closeable {
 	}
 	public static void main( String[] args ) throws InstantiationException, IllegalAccessException, ClassNotFoundException, IllegalArgumentException, InvocationTargetException, NoSuchMethodException, SecurityException{
 		File[] cp={
-//				new File(".\\src\\main\\java\\bwh\\mterms\\notebook")
+				new File(".\\src\\main\\java\\bwh\\mterms\\notebook"),
+				new File("F:\\programs\\nbs"),
 				new File("F:\\git\\mterms\\java\\phrasemining\\src\\main\\java")
 				};
 		try(Kernel kernel = new Kernel(cp)){
