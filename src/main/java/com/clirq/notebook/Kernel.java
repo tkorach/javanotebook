@@ -9,6 +9,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Scanner;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.codehaus.commons.compiler.CompileException;
 import org.codehaus.janino.ExpressionEvaluator;
@@ -33,8 +35,8 @@ public class Kernel implements Closeable {
 	public static void main(String[] args)
 			throws InstantiationException, IllegalAccessException, ClassNotFoundException, IllegalArgumentException,
 			InvocationTargetException, NoSuchMethodException, SecurityException {
-		File[] cp = { new File(".\\src\\main\\java\\bwh\\mterms\\notebook"), new File("F:\\programs\\nbs"),
-				new File("F:\\git\\mterms\\java\\phrasemining\\src\\main\\java") };
+		File[] cp = { new File(".\\src\\main\\java\\bwh\\mterms\\notebook"),
+				new File("Z:\\Tom\\git\\mterms\\java\\mterms\\src\\main\\java") };//TODO parameterize
 		ee = new ExpressionEvaluator();
 
 		try (Kernel kernel = new Kernel(cp)) {
@@ -46,15 +48,29 @@ public class Kernel implements Closeable {
 	}
 
 	public void listen() {
+		Pattern implicitVar=Pattern.compile("(%([A-Za-z][A-Za-z0-9_]*))");
 		try (Scanner scan = new Scanner(System.in)) {
-			String line = "";
+			String line = "", previousInput="";
 			String methodName = null, className = null;
 			System.out.println("Start listening. Type $EXIT to exit");
 			while (!(line = scan.nextLine()).equals("$EXIT")) {
+				if (line.trim().length() == 0) {
+					line=previousInput;
+				}
 				if (line.startsWith("\t")) {
 					String expression=line.trim();
+					Matcher m = implicitVar.matcher(expression);
+					expression=m.replaceAll(mr ->{
+						String varName=mr.group(2);
+						Object val=objects.get(varName);
+						Class<? extends Object> clz = val.getClass();
+						String newExp=String.format("(%sobjects.get(\"%s\"))", 
+								clz.getName().equals("Object")?"":"("+clz.getCanonicalName()+")",varName);
+						return newExp;
+					});
+					System.out.format("%s ==>%n", expression);
 					evaluateExpression(expression);
-				} else if (line.trim().length() > 0) {
+				} else {
 					String[] inputs = line.split("\t");
 					methodName = inputs[0];
 					if (inputs.length > 1)
@@ -100,8 +116,9 @@ public class Kernel implements Closeable {
 						e.printStackTrace();
 					}
 				}
+				previousInput=line;
 				System.out.println(
-						"Type <TAB><expression> or <method><TAB><class> to execute a method. Leave empty to use current method/class values. $EXIT to exit");
+						"Type <TAB><expression> or <method><TAB><class> to execute a method. Leave empty to use the current expression/method/class values. $EXIT to exit");
 			}
 			System.out.println("Exiting");
 		}
