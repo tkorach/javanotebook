@@ -5,7 +5,9 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Scanner;
@@ -26,7 +28,7 @@ public class Kernel implements Closeable {
 	Object[] objectsA;
 	public static ExpressionEvaluator ee;
 
-	public Kernel(File[] cp) {
+	public Kernel(File[] cp) throws IOException {
 		objects = new HashMap<>();
 		objectsA = new Object[] { objects };
 		this.cp = cp;
@@ -35,11 +37,18 @@ public class Kernel implements Closeable {
 	public static void main(String[] args)
 			throws InstantiationException, IllegalAccessException, ClassNotFoundException, IllegalArgumentException,
 			InvocationTargetException, NoSuchMethodException, SecurityException {
-		File[] cp = { new File(".\\src\\main\\java\\bwh\\mterms\\notebook"),
-				new File("Z:\\Tom\\git\\mterms\\java\\mterms\\src\\main\\java") };//TODO parameterize
+		List<File> cp = new ArrayList<>();
+		for (String a : args) {
+			File f=new File(a);
+			if (f.exists())
+				cp.add(f);
+			else {
+				logger.info("Argument |{}| is not an existing file", a);
+			}
+		}
 		ee = new ExpressionEvaluator();
 
-		try (Kernel kernel = new Kernel(cp)) {
+		try (Kernel kernel = new Kernel(cp.toArray(new File[0]))) {
 			kernel.listen();
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
