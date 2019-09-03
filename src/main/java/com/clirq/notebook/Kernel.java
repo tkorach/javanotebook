@@ -72,10 +72,14 @@ public class Kernel implements Closeable {
 					expression=m.replaceAll(mr ->{
 						String varName=mr.group(2);
 						Object val=objects.get(varName);
-						Class<? extends Object> clz = val.getClass();
-						String newExp=String.format("(%sobjects.get(\"%s\"))", 
-								clz.getName().equals("Object")?"":"("+clz.getCanonicalName()+")",varName);
-						return newExp;
+						if (val!=null) {
+							Class<? extends Object> clz = val.getClass();
+							String newExp=String.format("(%sobjects.get(\"%s\"))", 
+									clz.getName().equals("Object")?"":"("+clz.getCanonicalName()+")",varName);
+							return newExp;							
+						}else {
+							return mr.group();
+						}
 					});
 					System.out.format("%s ==>%n", expression);
 					evaluateExpression(expression);
