@@ -1,15 +1,18 @@
 package com.clirq.notebook;
 
+import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Properties;
 import java.util.Scanner;
 import java.util.Timer;
 import java.util.TimerTask;
@@ -30,35 +33,66 @@ public class Kernel implements Closeable {
 	Object[] objectsA;
 	Timer timer;
 	File semaphor;
+	long semaphoreListenerInitialDelay;
+	long semaphoreListenerFrequency;
 	public static ExpressionEvaluator ee;
 
-	public Kernel(File[] cp) throws IOException {
+	public Kernel(File[] cp, File semaphore, long semaphoreListenerInitialDelay, long semaphoreListenerFrequency) throws IOException {
 		objects = new HashMap<>();
 		objectsA = new Object[] { objects };
 		this.cp = cp;
 		this.timer=new Timer("cells");
-		this.semaphor=new File("Z:\\Tom\\stop_java");
+		this.semaphor=semaphore;
+		this.semaphoreListenerInitialDelay=semaphoreListenerInitialDelay;
+		this.semaphoreListenerFrequency=semaphoreListenerFrequency;
 	}
 
+	/**
+	 * Start a notebook kernel. 
+	 * Properties file schema: 
+	 * sourceDirs=';' seperated list of absolute paths. Will throw <code>NullPointerException</code> if empty. Make sure to double backslashes to escape them.  
+	 * semaphore=Absolute path to semaphore file. Defaults to "stop_java". 
+	 * semaphoreListenerInitialDelay= delay, in ms, untile the listener starts listening. Defaults to 3000ms.
+	 * semaphoreListenerFrequency=frequency, in ms, of checking for the existence of the semaphore file. Defaults to 3000ms.
+	 * 
+	 * @param args single argument: Path to properties file. 
+	 * @throws InstantiationException
+	 * @throws IllegalAccessException
+	 * @throws ClassNotFoundException
+	 * @throws IllegalArgumentException
+	 * @throws InvocationTargetException
+	 * @throws NoSuchMethodException
+	 * @throws SecurityException
+	 * @throws IOException
+	 */
 	public static void main(String[] args)
 			throws InstantiationException, IllegalAccessException, ClassNotFoundException, IllegalArgumentException,
-			InvocationTargetException, NoSuchMethodException, SecurityException {
-		List<File> cp = new ArrayList<>();
-		for (String a : args) {
-			File f=new File(a);
-			if (f.exists())
-				cp.add(f);
-			else {
-				logger.info("Argument |{}| is not an existing file", a);
-			}
-		}
+			InvocationTargetException, NoSuchMethodException, SecurityException, IOException {
+		File pFile = new File(args[0]);
+		Properties props = new Properties();
 		ee = new ExpressionEvaluator();
-
-		try (Kernel kernel = new Kernel(cp.toArray(new File[0]))) {
-			kernel.listen();
-		} catch (IOException e) {
-			// TODO Auto-generated catch block
-			e.printStackTrace();
+		try(BufferedReader br=Files.newBufferedReader(pFile.toPath())){
+			props.load(br);
+			
+			List<File> cp = new ArrayList<>();
+			//intentionally throw a NPE on empty value
+			for (String a : ((String)props.get("sourceDirs")).split(";")) {
+				File f=new File(a);
+				if (f.exists())
+					cp.add(f);
+				else {
+					logger.info("Argument |{}| is not an existing directory", a);
+				}
+			}
+			File semaphore=new File(props.getProperty("semaphore", "stop_java"));
+			long semaphoreListenerInitialDelay=Long.parseLong(props.getProperty("semaphoreListenerInitialDelay", "3000"));
+			long semaphoreListenerFrequency=Long.parseLong(props.getProperty("semaphoreListenerFrequency", "3000"));
+			try (Kernel kernel = new Kernel(cp.toArray(new File[0]), semaphore, semaphoreListenerInitialDelay, semaphoreListenerFrequency)) {
+				kernel.listen();
+			} catch (IOException e) {
+				// TODO Auto-generated catch block
+				e.printStackTrace();
+			}
 		}
 	}
 
@@ -76,7 +110,8 @@ public class Kernel implements Closeable {
 					listener.interrupt();
 				}
 			}
-		}, 3_000, 3_000);//wait a bit before checking for the file since it would take some time for the user to create the file anyway. 
+		}, semaphoreListenerInitialDelay, semaphoreListenerFrequency);//wait a bit before checking for the file since it would take some time for the user to create the file anyway.
+		logger.info("Using source directories {}, semaphore {}, listener delay {} ms, frequency {} ms", this.cp, semaphor, semaphoreListenerInitialDelay, semaphoreListenerFrequency);
 		try (Scanner scan = new Scanner(System.in)) {
 			String line = "", previousInput="";
 			String methodName = null, className = null;
