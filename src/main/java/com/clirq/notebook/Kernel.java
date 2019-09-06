@@ -234,6 +234,7 @@ public class Kernel implements Closeable {
 				}
 			}
 		}
+		timer.cancel();
 		logger.info("Finished closing instances");
 	}
 }
