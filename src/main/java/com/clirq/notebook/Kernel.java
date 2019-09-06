@@ -11,6 +11,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Scanner;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -26,12 +28,16 @@ public class Kernel implements Closeable {
 
 	Map<String, Object> objects;
 	Object[] objectsA;
+	Timer timer;
+	File semaphor;
 	public static ExpressionEvaluator ee;
 
 	public Kernel(File[] cp) throws IOException {
 		objects = new HashMap<>();
 		objectsA = new Object[] { objects };
 		this.cp = cp;
+		this.timer=new Timer("cells");
+		this.semaphor=new File("Z:\\Tom\\stop_java");
 	}
 
 	public static void main(String[] args)
@@ -58,6 +64,19 @@ public class Kernel implements Closeable {
 
 	public void listen() {
 		Pattern implicitVar=Pattern.compile("(%([A-Za-z][A-Za-z0-9_]*))");
+		Thread listener=Thread.currentThread();
+		timer.schedule(new TimerTask() {
+			@Override
+			public void run() {
+				if (semaphor.exists()) {
+					logger.info("Found semaphore: cell running too long. Interrupting");
+					if (!semaphor.delete()) {
+						logger.warn("Failed to delete semaphore |{}| please delete manually", semaphor);
+					}
+					listener.interrupt();
+				}
+			}
+		}, 3_000, 3_000);//wait a bit before checking for the file since it would take some time for the user to create the file anyway. 
 		try (Scanner scan = new Scanner(System.in)) {
 			String line = "", previousInput="";
 			String methodName = null, className = null;
@@ -114,7 +133,8 @@ public class Kernel implements Closeable {
 						}
 						// Call the desired method.
 						Method method = clz.getDeclaredMethod(methodName, Map.class);
-						method.invoke(o, objects);
+						method.invoke(o, objects);						
+						
 					} catch (ClassNotFoundException | InstantiationException | IllegalAccessException
 							| IllegalArgumentException | InvocationTargetException | NoSuchMethodException
 							| SecurityException e) {
