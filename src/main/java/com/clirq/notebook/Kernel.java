@@ -6,8 +6,11 @@ import java.io.File;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -22,25 +25,32 @@ import java.util.regex.Pattern;
 import org.codehaus.commons.compiler.CompileException;
 import org.codehaus.janino.ExpressionEvaluator;
 import org.codehaus.janino.JavaSourceClassLoader;
+import org.codehaus.janino.util.ResourceFinderClassLoader;
+import org.codehaus.janino.util.resource.MapResourceFinder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 public class Kernel implements Closeable {
 	protected static Logger logger = LoggerFactory.getLogger(Kernel.class);
 	File[] cp;
-
+	
 	Map<String, Object> objects;
 	Object[] objectsA;
 	Timer timer;
 	File semaphor;
 	long semaphoreListenerInitialDelay;
 	long semaphoreListenerFrequency;
+	URL[] uris;
 	public static ExpressionEvaluator ee;
 
 	public Kernel(File[] cp, File semaphore, long semaphoreListenerInitialDelay, long semaphoreListenerFrequency) throws IOException {
 		objects = new HashMap<>();
 		objectsA = new Object[] { objects };
 		this.cp = cp;
+		this.uris=new URL[this.cp.length];
+		for (int i = 0; i < uris.length; i++) {
+			uris[i]=cp[i].toURI().toURL();
+		}
 		this.timer=new Timer("cells");
 		this.semaphor=semaphore;
 		this.semaphoreListenerInitialDelay=semaphoreListenerInitialDelay;
@@ -143,12 +153,21 @@ public class Kernel implements Closeable {
 					if (inputs.length > 1)
 						className = inputs[1];// otherwise leave unchanged
 					// A new instance of the class loader is needed to refresh the loaded class
-					JavaSourceClassLoader cl = new JavaSourceClassLoader(this.getClass().getClassLoader(), // parentClassLoader
-							this.cp, // optionalSourcePath
-							(String) null // optionalCharacterEncoding
+					/*
+					ClassLoader cla = new ResourceFinderClassLoader(
+						    new MapResourceFinder(classes),    // resourceFinder
+						    ClassLoader.getSystemClassLoader() // parent
+						);
+					*/
+					
+					
+					URLClassLoader cl = new URLClassLoader(
+							uris,
+							this.getClass().getClassLoader() // parentClassLoader
 					);
+					
 					// debuggingInformation
-					cl.setDebuggingInfo(true, true, true);
+					//cl.setDebuggingInfo(true, true, true);
 
 					// The qualified class name must match the folder hierarchy
 					try {
@@ -237,4 +256,5 @@ public class Kernel implements Closeable {
 		timer.cancel();
 		logger.info("Finished closing instances");
 	}
+
 }
