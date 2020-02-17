@@ -15,8 +15,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Scanner;
+import java.util.StringTokenizer;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.regex.Matcher;
@@ -35,12 +37,14 @@ public class Kernel implements Closeable {
 	File[] cp;
 	
 	Map<String, Object> objects;
+	public static final Map<Thread, Map<String, Object>> objectsByThread=new HashMap<>();
 	Object[] objectsA;
 	Timer timer;
 	File semaphor;
 	long semaphoreListenerInitialDelay;
 	long semaphoreListenerFrequency;
 	URL[] uris;
+	private List<Thread> threads;
 	public static ExpressionEvaluator ee;
 
 	public Kernel(File[] cp, File semaphore, long semaphoreListenerInitialDelay, long semaphoreListenerFrequency) throws IOException {
@@ -52,9 +56,11 @@ public class Kernel implements Closeable {
 			uris[i]=cp[i].toURI().toURL();
 		}
 		this.timer=new Timer("cells");
+		this.threads=new ArrayList<>();
 		this.semaphor=semaphore;
 		this.semaphoreListenerInitialDelay=semaphoreListenerInitialDelay;
 		this.semaphoreListenerFrequency=semaphoreListenerFrequency;
+		objectsByThread.put(Thread.currentThread(), objects);//TODO provide a read-only copy?
 	}
 
 	/**
@@ -62,8 +68,8 @@ public class Kernel implements Closeable {
 	 * Properties file schema: 
 	 * sourceDirs=';' seperated list of absolute paths. Will throw <code>NullPointerException</code> if empty. Make sure to double backslashes to escape them.  
 	 * semaphore=Absolute path to semaphore file. Defaults to "stop_java". 
-	 * semaphoreListenerInitialDelay= delay, in ms, untile the listener starts listening. Defaults to 3000ms.
-	 * semaphoreListenerFrequency=frequency, in ms, of checking for the existence of the semaphore file. Defaults to 3000ms.
+	 * semaphoreListenerInitialDelay= delay, in milliseconds (ms), until the listener starts listening. Defaults to 3000ms.
+	 * semaphoreListenerFrequency=frequency (in ms) of checking for the existence of the semaphore file. Defaults to 3000ms.
 	 * 
 	 * @param args single argument: Path to properties file. 
 	 * @throws InstantiationException
@@ -112,12 +118,26 @@ public class Kernel implements Closeable {
 		timer.schedule(new TimerTask() {
 			@Override
 			public void run() {
+				//Clean old thread references.
+				for (int i=threads.size()-1; i>=0;i--) {
+					Thread t=threads.get(i);
+					if (!t.isAlive()) {
+						threads.remove(i);
+						objectsByThread.remove(t);
+					}
+				}
 				if (semaphor.exists()) {
 					logger.info("Found semaphore: cell running too long. Interrupting");
 					if (!semaphor.delete()) {
 						logger.warn("Failed to delete semaphore |{}| please delete manually", semaphor);
 					}
-					listener.interrupt();
+					//listener.interrupt();
+					for (int i=threads.size()-1; i>=0;i--) {
+						Thread t=threads.get(i);
+						if (t.isAlive() && !t.isInterrupted()) {
+							t.interrupt();
+						}
+					}
 				}
 			}
 		}, semaphoreListenerInitialDelay, semaphoreListenerFrequency);//wait a bit before checking for the file since it would take some time for the user to create the file anyway.
@@ -147,27 +167,70 @@ public class Kernel implements Closeable {
 					});
 					System.out.format("%s ==>%n", expression);
 					evaluateExpression(expression);
-				} else {
+				} else if (line.startsWith("main\t")){
+					//start main method of another class in another thread.
+					//schema: main	qualified class name	arguments (as space-separated string)
+					String[] inputs = line.split("\t");
+					className = inputs[1];// otherwise leave unchanged
+					String argsString=String.join(" ", Arrays.copyOfRange(inputs, 2, inputs.length));
+					String[] args=Kernel.translateCommandline(argsString);
+					// A new instance of the class loader is needed to refresh the loaded class
+					URLClassLoader cl = new URLClassLoader(
+							uris,
+							this.getClass().getClassLoader() // parentClassLoader
+					);
+
+					// The qualified class name must match the folder hierarchy
+					try {
+						Class<?> clz = cl.loadClass(className);
+						/*
+						 * Reflection instead of interface removes the dependency of the Notebook source
+						 * file on this project. if (o instanceof Notebook) {
+						 * ((Notebook)o).setState(objects); }
+						 */
+						// Call the main(args) method.
+						Method method = clz.getDeclaredMethod("main", String[].class);
+						logger.info("Start main method of {} with arguments: {}", clz.getCanonicalName(), args);
+						Thread t=new Thread(new Runnable() { 
+						@Override
+						public void run() {
+							try {
+								//provides a hook for the invoked main(args) method to share variables with cells and expressions
+								method.invoke(null, new Object[] {args});
+							} catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
+								// TODO Auto-generated catch block
+								logger.warn("Error while tryin to invoke  main method of {}: {}", clz.getCanonicalName(),  e.getMessage());
+								e.printStackTrace();
+							}
+							
+							}
+						});
+						objectsByThread.put(t, objects);
+						t.start();
+						this.threads.add(t);
+					} catch (ClassNotFoundException | IllegalArgumentException | NoSuchMethodException
+							| SecurityException e) {
+						logger.warn("Error while tryin to invoke {}.{}: {}", className, methodName, e.getMessage());
+						e.printStackTrace();
+					} catch (Exception e) {
+						logger.info("Exception while invoking {}.{}: {}.", className, methodName, e.getMessage());
+						e.printStackTrace();
+					} catch (Throwable e) {
+						logger.info("Error while invoking {}.{}: {}. Consider exiting", className, methodName,
+								e.getMessage());
+						e.printStackTrace();
+					}
+					
+				} else {//invoke a cell
 					String[] inputs = line.split("\t");
 					methodName = inputs[0];
 					if (inputs.length > 1)
 						className = inputs[1];// otherwise leave unchanged
 					// A new instance of the class loader is needed to refresh the loaded class
-					/*
-					ClassLoader cla = new ResourceFinderClassLoader(
-						    new MapResourceFinder(classes),    // resourceFinder
-						    ClassLoader.getSystemClassLoader() // parent
-						);
-					*/
-					
-					
 					URLClassLoader cl = new URLClassLoader(
 							uris,
 							this.getClass().getClassLoader() // parentClassLoader
 					);
-					
-					// debuggingInformation
-					//cl.setDebuggingInfo(true, true, true);
 
 					// The qualified class name must match the folder hierarchy
 					try {
@@ -187,8 +250,25 @@ public class Kernel implements Closeable {
 						}
 						// Call the desired method.
 						Method method = clz.getDeclaredMethod(methodName, Map.class);
-						method.invoke(o, objects);						
-						
+						Throwable[] thrownError=new Throwable[1];
+						Runnable run=new Runnable() {
+							@Override
+							public void run() {
+								try {
+									method.invoke(o, objects);
+								} catch (IllegalAccessException | IllegalArgumentException
+										| InvocationTargetException e) {
+									thrownError[0]=e;
+								}
+							}
+						};
+						Thread t=new Thread(run,methodName);
+						this.threads.add(t);
+						t.start();
+						t.join();//TODO Consider parameterizing. Currently: wait for thread to end. 
+						if (thrownError[0]!=null) {
+							throw thrownError[0];
+						}
 					} catch (ClassNotFoundException | InstantiationException | IllegalAccessException
 							| IllegalArgumentException | InvocationTargetException | NoSuchMethodException
 							| SecurityException e) {
@@ -254,7 +334,86 @@ public class Kernel implements Closeable {
 			}
 		}
 		timer.cancel();
+		for (Thread t: threads) {
+			if (t.isAlive()) {
+				logger.info("Attempt to interrupt thread {}, wait for {} ms", t.getName(), this.semaphoreListenerInitialDelay);
+				t.interrupt();
+				try {
+					t.join(this.semaphoreListenerInitialDelay);
+					logger.info("Closed thread {}", t.getName());
+				} catch (InterruptedException e1) {
+					logger.info("Thread {} timed-out. Please shut down JVM manually", t.getName());
+				}
+			}
+		}
 		logger.info("Finished closing instances");
 	}
+	
+	/**
+	 * [code borrowed from ant.jar]
+	 * Crack a command line.
+	 * @param toProcess the command line to process.
+	 * @return the command line broken into strings.
+	 * An empty or null toProcess parameter results in a zero sized array.
+	 */
+	public static String[] translateCommandline(String toProcess) {
+	    if (toProcess == null || toProcess.length() == 0) {
+	        //no command? no string
+	        return new String[0];
+	    }
+	    // parse with a simple finite state machine
 
+	    final int normal = 0;
+	    final int inQuote = 1;
+	    final int inDoubleQuote = 2;
+	    int state = normal;
+	    final StringTokenizer tok = new StringTokenizer(toProcess, "\"\' ", true);
+	    final ArrayList<String> result = new ArrayList<String>();
+	    final StringBuilder current = new StringBuilder();
+	    boolean lastTokenHasBeenQuoted = false;
+
+	    while (tok.hasMoreTokens()) {
+	        String nextTok = tok.nextToken();
+	        switch (state) {
+	        case inQuote:
+	            if ("\'".equals(nextTok)) {
+	                lastTokenHasBeenQuoted = true;
+	                state = normal;
+	            } else {
+	                current.append(nextTok);
+	            }
+	            break;
+	        case inDoubleQuote:
+	            if ("\"".equals(nextTok)) {
+	                lastTokenHasBeenQuoted = true;
+	                state = normal;
+	            } else {
+	                current.append(nextTok);
+	            }
+	            break;
+	        default:
+	            if ("\'".equals(nextTok)) {
+	                state = inQuote;
+	            } else if ("\"".equals(nextTok)) {
+	                state = inDoubleQuote;
+	            } else if (" ".equals(nextTok)) {
+	                if (lastTokenHasBeenQuoted || current.length() != 0) {
+	                    result.add(current.toString());
+	                    current.setLength(0);
+	                }
+	            } else {
+	                current.append(nextTok);
+	            }
+	            lastTokenHasBeenQuoted = false;
+	            break;
+	        }
+	    }
+	    if (lastTokenHasBeenQuoted || current.length() != 0) {
+	        result.add(current.toString());
+	    }
+	    if (state == inQuote || state == inDoubleQuote) {
+	        throw new RuntimeException("unbalanced quotes in " + toProcess);
+	    }
+	    return result.toArray(new String[result.size()]);
+	}
 }
