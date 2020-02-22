@@ -17,7 +17,7 @@ public class Notebook {
  1. Compile the file `javac Notebook.java`
  1. Copy the generated .class file to the kernel's source directory. 
  1. Start the kernel (if not started).
- 1. type to standard input `A<tab>cell`
+ 1. type to standard input `Notebook<tab>cell`
  Expected output: 
  *Hellow, world!*
  
