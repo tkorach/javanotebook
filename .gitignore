@@ -4,3 +4,5 @@
 .classpath
 .project
 pom.xml
+.temp*
+src/main/resources/*.properties
