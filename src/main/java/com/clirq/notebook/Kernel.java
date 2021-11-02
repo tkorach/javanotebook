@@ -1,5 +1,11 @@
 package com.clirq.notebook;
 
+import nlp.utils.StaticUtils;
+import org.codehaus.commons.compiler.CompileException;
+import org.codehaus.janino.ExpressionEvaluator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.File;
@@ -10,27 +16,12 @@ import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Files;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
-import java.util.Properties;
-import java.util.Scanner;
-import java.util.StringTokenizer;
-import java.util.Timer;
-import java.util.TimerTask;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
-
-import nlp.utils.StaticUtils;
-import org.codehaus.commons.compiler.CompileException;
-import org.codehaus.janino.ExpressionEvaluator;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 public class Kernel implements Closeable {
 	protected static Logger logger = LoggerFactory.getLogger(Kernel.class);
@@ -325,6 +316,35 @@ public class Kernel implements Closeable {
 			}
 		}
 	}
+	public void closeRecursive(Object obj) {
+		var parentCL = this.getClass().getClassLoader();
+		var previousFields = getFieldsUpTo(obj.getClass(), Object.class).stream().collect(Collectors.toMap(f -> f.getName(), Function.identity()));
+			// Arrays.stream(previous.getClass().getDeclaredFields()).map(f-> f.getName()).collect(Collectors.toSet());
+		var clz = obj.getClass(); //new class.
+		// If a field was dropped, drop its value.
+		logger.info("Iterate over {}", clz.getCanonicalName());
+		for (var field:getFieldsUpTo(clz, Object.class)){
+			try {
+				field.trySetAccessible();
+				Object value = field.get(obj);
+				if (value!=null) {
+					if (value instanceof  Closeable){
+						logger.info("close {}", field.toString());
+						((Closeable) value).close();
+					}
+					var cl = value.getClass().getClassLoader();
+					if (cl!=null && !parentCL.equals(cl)){//Recurse only on custom classes.
+						closeRecursive(value);
+					}
+				}
+			} catch (IllegalAccessException e) {
+				continue;
+			} catch (IOException e) {
+				e.printStackTrace();
+				logger.error("Error while trying to close {}.{}: {}", clz.getCanonicalName(), field.getName(), StaticUtils.stackTraceToString(e));
+			}
+		}
+	}
 
 	/**
 	 * Collect the fields per class, including superclasses.
@@ -374,18 +394,12 @@ public class Kernel implements Closeable {
 
 	@Override
 	public void close() throws IOException {
+		var parentCL = this.getClass().getClassLoader();
 		logger.info("Closing instances");
 		for (Entry<String, Object> e : objects.entrySet()) {
+			String className = e.getKey();
 			Object object = e.getValue();
-			if (object instanceof Closeable) {
-				logger.info("Attempt closing {}", e.getKey());
-				try {
-					((Closeable) object).close();
-				} catch (Exception e1) {
-					// TODO Auto-generated catch block
-					e1.printStackTrace();
-				}
-			}
+			closeRecursive(object);
 		}
 		timer.cancel();
 		for (Thread t: threads) {
