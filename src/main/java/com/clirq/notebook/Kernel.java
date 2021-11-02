@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
@@ -15,20 +16,19 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.Optional;
 import java.util.Properties;
 import java.util.Scanner;
 import java.util.StringTokenizer;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
+import nlp.utils.StaticUtils;
 import org.codehaus.commons.compiler.CompileException;
 import org.codehaus.janino.ExpressionEvaluator;
-import org.codehaus.janino.JavaSourceClassLoader;
-import org.codehaus.janino.util.ResourceFinderClassLoader;
-import org.codehaus.janino.util.resource.MapResourceFinder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -71,15 +71,7 @@ public class Kernel implements Closeable {
 	 * semaphoreListenerInitialDelay= delay, in milliseconds (ms), until the listener starts listening. Defaults to 3000ms.
 	 * semaphoreListenerFrequency=frequency (in ms) of checking for the existence of the semaphore file. Defaults to 3000ms.
 	 * 
-	 * @param args single argument: Path to properties file. 
-	 * @throws InstantiationException
-	 * @throws IllegalAccessException
-	 * @throws ClassNotFoundException
-	 * @throws IllegalArgumentException
-	 * @throws InvocationTargetException
-	 * @throws NoSuchMethodException
-	 * @throws SecurityException
-	 * @throws IOException
+	 * @param args single argument: Path to properties file.
 	 */
 	public static void main(String[] args)
 			throws InstantiationException, IllegalAccessException, ClassNotFoundException, IllegalArgumentException,
@@ -183,12 +175,7 @@ public class Kernel implements Closeable {
 					// The qualified class name must match the folder hierarchy
 					try {
 						Class<?> clz = cl.loadClass(className);
-						/*
-						 * Reflection instead of interface removes the dependency of the Notebook source
-						 * file on this project. if (o instanceof Notebook) {
-						 * ((Notebook)o).setState(objects); }
-						 */
-						// Call the main(args) method.
+						// Call the main(args) method. No need to populate objects since presumably the main methods initializes the object.
 						Method method = clz.getDeclaredMethod("main", String[].class);
 						logger.info("Start main method of {} with arguments: {}", clz.getCanonicalName(), args);
 						Thread t=new Thread(new Runnable() { 
@@ -199,7 +186,7 @@ public class Kernel implements Closeable {
 								method.invoke(null, new Object[] {args});
 							} catch (IllegalAccessException | IllegalArgumentException | InvocationTargetException e) {
 								// TODO Auto-generated catch block
-								logger.warn("Error while tryin to invoke  main method of {}: {}", clz.getCanonicalName(),  e.getMessage());
+								logger.warn("Error while trying to invoke  main method of {}: {}", clz.getCanonicalName(),  e.getMessage());
 								e.printStackTrace();
 							}
 							
@@ -235,27 +222,22 @@ public class Kernel implements Closeable {
 					// The qualified class name must match the folder hierarchy
 					try {
 						Class<?> clz = cl.loadClass(className);
-						Object o = clz.getDeclaredConstructor().newInstance();
-						/*
-						 * Reflection instead of interface removes the dependency of the Notebook source
-						 * file on this project. if (o instanceof Notebook) {
-						 * ((Notebook)o).setState(objects); }
-						 */
-						try {
+						Object obj = clz.getDeclaredConstructor().newInstance();
 
-							Method setObjectsMethod = clz.getDeclaredMethod("setState", Map.class);
-							setObjectsMethod.invoke(o, objects);
-						} catch (NoSuchMethodException | SecurityException e) {
-							// ignore - setState is not mandatory.
+						Object previous = objects.get(className);
+						if (previous!=null){
+							populateFields(cl, previous, obj);
 						}
+						//Enforces a single instance per class!
+						objects.put(className, obj); //replace the previous instance with the new one after copying over
 						// Call the desired method.
-						Method method = clz.getDeclaredMethod(methodName, Map.class);
+						Method method = clz.getDeclaredMethod(methodName);
 						Throwable[] thrownError=new Throwable[1];
 						Runnable run=new Runnable() {
 							@Override
 							public void run() {
 								try {
-									method.invoke(o, objects);
+									method.invoke(obj);
 								} catch (IllegalAccessException | IllegalArgumentException
 										| InvocationTargetException e) {
 									thrownError[0]=e;
@@ -272,13 +254,13 @@ public class Kernel implements Closeable {
 					} catch (ClassNotFoundException | InstantiationException | IllegalAccessException
 							| IllegalArgumentException | InvocationTargetException | NoSuchMethodException
 							| SecurityException e) {
-						logger.warn("Error while tryin to invoke {}.{}: {}", className, methodName, e.getMessage());
+						logger.error("Error while tryin to invoke {}.{}: {}", className, methodName, e.getMessage());
 						e.printStackTrace();
 					} catch (Exception e) {
-						logger.info("Exception while invoking {}.{}: {}.", className, methodName, e.getMessage());
+						logger.error("Exception while invoking {}.{}: {}.", className, methodName, e.getMessage());
 						e.printStackTrace();
 					} catch (Throwable e) {
-						logger.info("Error while invoking {}.{}: {}. Consider exiting", className, methodName,
+						logger.error("Error while invoking {}.{}: {}. Consider exiting", className, methodName,
 								e.getMessage());
 						e.printStackTrace();
 					}
@@ -290,6 +272,78 @@ public class Kernel implements Closeable {
 			System.out.println("Exiting");
 		}
 		System.out.println("Finished");
+	}
+
+	public <T> void populateFields(ClassLoader currentCL, T previous, T obj) throws ClassNotFoundException, InvocationTargetException, InstantiationException, IllegalAccessException, NoSuchMethodException {
+		var parentCL = this.getClass().getClassLoader();
+		var previousFields = getFieldsUpTo(previous.getClass(), Object.class).stream().collect(Collectors.toMap(f -> f.getName(), Function.identity()));
+			// Arrays.stream(previous.getClass().getDeclaredFields()).map(f-> f.getName()).collect(Collectors.toSet());
+		var clz = obj.getClass(); //new class.
+		// If a field was dropped, drop its value.
+		for (var field:getFieldsUpTo(clz, Object.class)){
+			if (previousFields.containsKey(field.getName())){//only move over fields existing in the previous version of the class
+				var pfield = previousFields.get(field.getName());
+				Object value = null;
+				try {
+					pfield.trySetAccessible();
+					value = pfield.get(previous);
+				} catch (IllegalAccessException e) {
+					e.printStackTrace();
+					logger.error(StaticUtils.stackTraceToString(e));
+					throw e;
+				}
+				if (value!=null) {
+					ClassLoader valueCL = value.getClass().getClassLoader();
+					if (valueCL==null || valueCL.equals(parentCL)){ //immutable classes - hand over
+						try {
+							field.set(obj, value);
+						} catch (IllegalAccessException e) {
+							e.printStackTrace();
+							continue;
+						}
+					} else{ //Attempt recreating the object
+						String className = value.getClass().getCanonicalName();
+						try {
+							Class<?> nclz = currentCL.loadClass(className);
+							Object sobj = nclz.getDeclaredConstructor().newInstance();
+							populateFields(currentCL, value, sobj);
+
+							//place the populated sub-object in the new object
+							try {
+								field.set(obj, sobj);
+							} catch (IllegalAccessException e) {
+								e.printStackTrace();
+								continue;
+							}
+						} catch (ClassNotFoundException |InvocationTargetException | InstantiationException | IllegalAccessException | NoSuchMethodException e) {
+							e.printStackTrace();
+							logger.error(StaticUtils.stackTraceToString(e));
+							throw e;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * Collect the fields per class, including superclasses.
+	 * Adopted from https://stackoverflow.com/questions/16966629/what-is-the-difference-between-getfields-and-getdeclaredfields-in-java-reflectio
+ 	 * @param startClass the class whose fields to collect
+	 * @param exclusiveParent class at which to stop the climb in the class hierarchy. Null to collect fields from all superclasses.
+	 * @return
+	 */
+	public static List<Field> getFieldsUpTo(Class<?> startClass, Class<?> exclusiveParent) {
+		List<Field> currentClassFields = new ArrayList(Arrays.asList(startClass.getDeclaredFields()));
+		Class<?> parentClass = startClass.getSuperclass();
+		if (parentClass != null &&
+				(exclusiveParent == null || !(parentClass.equals(exclusiveParent)))) {
+			List<Field> parentClassFields =
+					(List<Field>) getFieldsUpTo(parentClass, exclusiveParent);
+			currentClassFields.addAll(parentClassFields);
+		}
+
+		return currentClassFields;
 	}
 
 	public void evaluateExpression(String expression) {
